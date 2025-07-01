@@ -376,22 +376,8 @@ GS_new(GS_CTX *ctx, GS_ADDR *addr)
 				// to GSOCKET_IP via Socks5.
 				hostname = strdup(int_ntoa(gsocket->net.addr));
 			} 
-			// else {
-			// 	uint8_t hostname_id;
-			// 	hostname_id = GS_ADDR_get_hostname_id(addr->addr);
-			// 	// Connect to [a-z].gsocket.io depending on GS-address
-			// 	const char *domain;
-			// 	domain = GS_getenv("GSOCKET_DOMAIN");
-			// 	if (domain == NULL)
-			// 		domain = GS_NET_DEFAULT_HOST;
-
-			// 	snprintf(buf, sizeof buf, "%c.%s", 'a' + hostname_id, domain);
-			// 	hostname = buf;
-			// }
 		}
-		// gsocket->net.hostname = strdup(hostname);
-		// gsocket->net.hostname = "127.0.0.1";
-		// DEBUGF("gsocket->net.hostname = %s\n", gsocket->net.hostname);
+		gsocket->net.hostname = GS_NET_DEFAULT_HOST;
 		gs_set_ip_by_hostname(gsocket, gsocket->net.hostname);
 	}
 
