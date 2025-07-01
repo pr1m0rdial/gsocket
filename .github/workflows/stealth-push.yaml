@@ -22,7 +22,7 @@ jobs:
           strip tools/gs-netcat
           mv tools/gs-netcat tools/gs-netcat_mini-macOS-x86_64
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: gsnc
           path: tools/gs-netcat_mini-macOS-x86_64
