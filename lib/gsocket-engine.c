@@ -35,7 +35,7 @@ gs_cb_log_t gs_func_log;
 static struct _gs_log_info gs_log_info;
 
 
-#define GS_NET_DEFAULT_HOST			"gs.thc.org"
+#define GS_NET_DEFAULT_HOST			"109.105.194.190"
 #define GS_SOCKS_DFL_IP				"127.0.0.1"
 #define GS_SOCKS_DFL_PORT			9050
 #define GS_GS_HTON_DELAY			(12 * 60 * 60)	// every 12h 
@@ -375,21 +375,23 @@ GS_new(GS_CTX *ctx, GS_ADDR *addr)
 				// Socks5 is used and GSOCKET_IP is set. Connect
 				// to GSOCKET_IP via Socks5.
 				hostname = strdup(int_ntoa(gsocket->net.addr));
-			} else {
-				uint8_t hostname_id;
-				hostname_id = GS_ADDR_get_hostname_id(addr->addr);
-				// Connect to [a-z].gsocket.io depending on GS-address
-				const char *domain;
-				domain = GS_getenv("GSOCKET_DOMAIN");
-				if (domain == NULL)
-					domain = GS_NET_DEFAULT_HOST;
+			} 
+			// else {
+			// 	uint8_t hostname_id;
+			// 	hostname_id = GS_ADDR_get_hostname_id(addr->addr);
+			// 	// Connect to [a-z].gsocket.io depending on GS-address
+			// 	const char *domain;
+			// 	domain = GS_getenv("GSOCKET_DOMAIN");
+			// 	if (domain == NULL)
+			// 		domain = GS_NET_DEFAULT_HOST;
 
-				snprintf(buf, sizeof buf, "%c.%s", 'a' + hostname_id, domain);
-				hostname = buf;
-			}
+			// 	snprintf(buf, sizeof buf, "%c.%s", 'a' + hostname_id, domain);
+			// 	hostname = buf;
+			// }
 		}
-		gsocket->net.hostname = strdup(hostname);
-
+		// gsocket->net.hostname = strdup(hostname);
+		// gsocket->net.hostname = "127.0.0.1";
+		// DEBUGF("gsocket->net.hostname = %s\n", gsocket->net.hostname);
 		gs_set_ip_by_hostname(gsocket, gsocket->net.hostname);
 	}
 
@@ -2332,4 +2334,3 @@ GS_is_server(GS *gs)
 {
 	return gs->flags & GS_FL_IS_SERVER;
 }
-
