@@ -146,8 +146,8 @@ jobs:
           usesh: true
           prepare: |
             pkg_add curl
-            pkg_add autoconf%2.71
-            pkg_add automake%1.16
+            pkg_add autoconf
+            pkg_add automake
             pkg_add openssl
             pkg_add gcc
             pkg_add gmake
