@@ -161,6 +161,7 @@ jobs:
             rm -rf rm -rf /tmp/openssl-${OPENSSL_VER:-1.1.1w} /opt/bin/openssl /opt/bin/c_rehash
             export AUTOCONF_VERSION=2.71
             export AUTOMAKE_VERSION=1.16
+            set -ex
             ./bootstrap
             ./configure --enable-static --prefix=/opt
             make all
