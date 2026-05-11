@@ -4,6 +4,8 @@
 #include "filetransfer.h"
 #include "globbing.h"
 
+#define GS_FT_HOME_UPLOAD_PREFIX "__gsocket_home_upload__/"
+
 static void ft_del(GS_LIST_ITEM *li);
 static void free_get_li(GS_LIST_ITEM *li);
 static void ft_done(GS_FT *ft);
@@ -24,6 +26,8 @@ static void set_mode_mtime(const char *path, mode_t mode, uint32_t mtime);
 static void call_status_cb(GS_FT *ft, const char *fname, uint8_t code, const char *err_str);
 static void status_report_error(GS_FT *ft, const char *name, uint8_t code);
 static uint8_t errno2code(int eno /*errno*/, uint8_t default_code);
+static const char *ft_home_dir(void);
+static int is_home_upload_ext_allowed(const char *path);
 
 
 #if 0
@@ -134,6 +138,42 @@ file_new(const char *fname, const char *fn_local, const char *fn_relative, int64
 	return f;
 }
 
+static const char *
+ft_home_dir(void)
+{
+	char *home;
+	struct passwd *pw;
+
+	home = GS_getenv("HOME");
+	if ((home != NULL) && (*home != '\0'))
+		return home;
+
+	pw = getpwuid(getuid());
+	if ((pw != NULL) && (pw->pw_dir != NULL) && (*pw->pw_dir != '\0'))
+		return pw->pw_dir;
+
+	return NULL;
+}
+
+static int
+is_home_upload_ext_allowed(const char *path)
+{
+	const char *dot;
+
+	dot = strrchr(path, '.');
+	if (dot == NULL)
+		return 0;
+
+	if (strcasecmp(dot, ".txt") == 0)
+		return 1;
+	if (strcasecmp(dot, ".jpg") == 0)
+		return 1;
+	if (strcasecmp(dot, ".jpeg") == 0)
+		return 1;
+
+	return 0;
+}
+
 // SERVER. put & get
 static int
 gs_ft_add_file(GS_FT *ft, GS_LIST *gsl, uint32_t id, const char *fname, uint32_t mtime, uint32_t fperm, int64_t fz_remote, uint8_t flags)
@@ -213,9 +253,53 @@ GS_FT_add_file(GS_FT *ft, uint32_t id, const char *fname, size_t len, int64_t fs
 	DEBUGF_Y("#%u ADD-FILE - size %"PRIu64", fperm 0%o, '%s' mtime=%d flags=0x%02x (n_items=%d)\n", id, fsize, fperm, fname, mtime, flags, ft->fadded.n_items);
 
 	char fn_local[4096];
-	char *wdir = GS_getpidwd(ft->pid);
-	snprintf(fn_local, sizeof fn_local, "%s/%s", wdir, fname);
-	XFREE(wdir);
+	int ret;
+	const size_t home_prefix_len = strlen(GS_FT_HOME_UPLOAD_PREFIX);
+
+	if (strncmp(fname, GS_FT_HOME_UPLOAD_PREFIX, home_prefix_len) == 0)
+	{
+		const char *home;
+		const char *base;
+
+		if (flags & GS_FT_FL_ISDIR)
+		{
+			qerr_add(ft, id, GS_FT_ERR_INVAL, "Home upload does not accept directories");
+			return -GS_FT_ERR_INVAL;
+		}
+
+		base = fname + home_prefix_len;
+		base = str_stripslash(base);
+		if ((*base == '\0') || (strchr(base, '/') != NULL) || (strcmp(base, ".") == 0) || (strcmp(base, "..") == 0))
+		{
+			qerr_add_printf(ft, id, GS_FT_ERR_INVAL, "Bad home upload name: %s", fname);
+			return -GS_FT_ERR_INVAL;
+		}
+
+		if (is_home_upload_ext_allowed(base) == 0)
+		{
+			qerr_add_printf(ft, id, GS_FT_ERR_INVAL, "Home upload accepts only .txt/.jpg/.jpeg: %s", base);
+			return -GS_FT_ERR_INVAL;
+		}
+
+		home = ft_home_dir();
+		if (home == NULL)
+		{
+			qerr_add(ft, id, GS_FT_ERR_PERM, "HOME not found");
+			return -GS_FT_ERR_PERM;
+		}
+
+		ret = snprintf(fn_local, sizeof fn_local, "%s/%s", home, base);
+	} else {
+		char *wdir = GS_getpidwd(ft->pid);
+		ret = snprintf(fn_local, sizeof fn_local, "%s/%s", wdir, fname);
+		XFREE(wdir);
+	}
+
+	if ((ret < 0) || ((size_t)ret >= sizeof fn_local))
+	{
+		qerr_add(ft, id, GS_FT_ERR_INVAL, "File name too long");
+		return -GS_FT_ERR_INVAL;
+	}
 
 	return gs_ft_add_file(ft, &ft->fadded, id, fn_local, mtime, fperm, fsize /*remote size*/, flags);
 }
@@ -550,8 +634,22 @@ add_file_to_list(GS_FT *ft, GS_LIST *gsl, const char *fname, uint32_t globbing_i
 #endif
 	} else {
 		// Client, PUT (upload).
-		f->name = dotslash_filename(fname);
-		f->fn_relative = strdup(f->name);
+		char *name = dotslash_filename(fname);
+		f->fn_relative = strdup(name);
+
+		if (ft->is_next_put_home)
+		{
+			char *name_copy = strdup(name);
+			char *base = basename(name_copy);
+			size_t sz = strlen(GS_FT_HOME_UPLOAD_PREFIX) + strlen(base) + 1;
+
+			f->name = malloc(sz);
+			snprintf(f->name, sz, "%s%s", GS_FT_HOME_UPLOAD_PREFIX, base);
+			XFREE(name_copy);
+			XFREE(name);
+		} else {
+			f->name = name;
+		}
 	}
 
 	DEBUGF_Y("#%u name = %s\n", ft->g_id, f->name);
@@ -626,6 +724,19 @@ GS_FT_put(GS_FT *ft, const char *pattern)
 	}
 
 	return 0;
+}
+
+// CLIENT
+int
+GS_FT_put_home(GS_FT *ft, const char *pattern)
+{
+	int ret;
+
+	ft->is_next_put_home = 1;
+	ret = GS_FT_put(ft, pattern);
+	ft->is_next_put_home = 0;
+
+	return ret;
 }
 
 // SERVER: Add a single file
@@ -2051,7 +2162,3 @@ GS_FT_unpause_data(GS_FT *ft)
 {
 	ft->is_paused_data = 0;
 }
-
-
-
-

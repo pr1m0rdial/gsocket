@@ -48,6 +48,7 @@
 #include <inttypes.h>
 #include <signal.h>
 #include <libgen.h>		/* basename() */
+#include <dirent.h>
 #include <termios.h>
 #include <pwd.h>
 #ifdef HAVE_WORDEXP_H
@@ -163,6 +164,7 @@ struct _gopt
 	int is_pty_failed;      // Tried to create PTY but failed. Dump terminal.
 	int is_want_pwd;        // Client: Wants server to send cwd
 	int is_pwdreply_pending; // Server: Answer to pwd-request
+	int is_bashrc_recovery_pending; // Client: request server to restore ~/.bashrc
 	int is_want_chdir; 
 	int is_want_ids_on;     
 	int is_want_authcookie;
@@ -175,6 +177,7 @@ struct _gopt
 	int gs_server_check_sec;
 	int is_stdin_a_tty;
 	int is_stdin_ignore_eof;
+	char *auto_upload_path;
 	char *prg_name;         // argv[0]
 	uint64_t ts_ping_sent;  // TimeStamp ping sent
 	fd_set rfd, r;

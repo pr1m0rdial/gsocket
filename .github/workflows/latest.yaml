@@ -133,7 +133,6 @@ jobs:
           tag: v${{ env.VER }}
 
 # https://github.com/vmactions/openbsd-vm
-  # https://github.com/vmactions/openbsd-vm
   OpenBSD:
     env:
       OS: "openbsd"
@@ -146,10 +145,11 @@ jobs:
           usesh: true
           prepare: |
             pkg_add curl
-            pkg_add autoconf
-            pkg_add automake
-            pkg_add openssl
-            pkg_add gcc
+            pkg_add autoconf-2.71
+            pkg_add automake-1.16.5
+            pkg_add openssl-3.0.8
+            pkg_info -Q tar
+            pkg_add gcc-11.2.0p3
             pkg_add gmake
             pkg_add tar
 
@@ -161,7 +161,6 @@ jobs:
             rm -rf rm -rf /tmp/openssl-${OPENSSL_VER:-1.1.1w} /opt/bin/openssl /opt/bin/c_rehash
             export AUTOCONF_VERSION=2.71
             export AUTOMAKE_VERSION=1.16
-            set -ex
             ./bootstrap
             ./configure --enable-static --prefix=/opt
             make all

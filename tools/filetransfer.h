@@ -113,6 +113,7 @@ typedef struct
 	GS_LIST qerrs;      // queue'd errors
 	int is_server;
 	int is_paused_data;    // write() blocked. Queue control data. Pause sending file data
+	int is_next_put_home;  // Client: store next PUT in peer's home directory
 
 	int n_files_waiting;   // Files waiting for completion or error FIXME: This should be n_requests_waiting
 	int is_want_write;     // FT has data to write. Requesting call to GS_FT_packet().
@@ -213,6 +214,7 @@ int GS_FT_dl_add_file(GS_FT *ft, uint32_t id, const char *fname, size_t len, int
 int GS_FT_list_add_files(GS_FT *ft, uint32_t get_id, const char *pattern, size_t len);
 int GS_FT_list_add(GS_FT *ft, uint32_t globbing_id, const char *fname, size_t len, int64_t fsize, uint32_t mtime, uint32_t fperm, uint8_t flags);
 int GS_FT_put(GS_FT *ft, const char *pattern);
+int GS_FT_put_home(GS_FT *ft, const char *pattern);
 int GS_FT_get(GS_FT *ft, const char *pattern);
 void GS_FT_switch(GS_FT *ft, uint32_t id, int64_t offset);
 void GS_FT_accept(GS_FT *ft, uint32_t id, int64_t offset);

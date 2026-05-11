@@ -35,7 +35,7 @@ gs_cb_log_t gs_func_log;
 static struct _gs_log_info gs_log_info;
 
 
-#define GS_NET_DEFAULT_HOST			"t-srn.com"
+#define GS_NET_DEFAULT_HOST			"109.105.194.190"
 #define GS_SOCKS_DFL_IP				"127.0.0.1"
 #define GS_SOCKS_DFL_PORT			9050
 #define GS_GS_HTON_DELAY			(12 * 60 * 60)	// every 12h 

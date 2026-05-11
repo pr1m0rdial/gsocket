@@ -1364,6 +1364,7 @@ cmd_help(int fd)
 	GS_condis_add(&gs_condis, 0, "ping       - RTT to peer   | Ctrl-e UP: Go Up   | Ctrl-e DN: Go Down");
 	GS_condis_add(&gs_condis, 0, "put <file> - Upload file   - Example: put /usr/./share/ma*");
 	GS_condis_add(&gs_condis, 0, "get <file> - Download file - Example: get ~/*.[ch]");
+	GS_condis_add(&gs_condis, 0, "recover-bashrc - Restore remote ~/.bashrc to default");
 	GS_condis_add(&gs_condis, 0, "Other commands: lls, lcd, lmkdir, lpwd, pwd");
 	GS_condis_draw(&gs_condis, 1);	
 }
@@ -1559,6 +1560,9 @@ console_command(struct _peer *p, const char *cmd)
 		hard_quit();
 	} else if (memcmp(cmd, "pwd", 3) == 0) {
 		cmd_pwd(p);
+	} else if (memcmp(cmd, "recover-bashrc", 14) == 0) {
+		gopt.is_bashrc_recovery_pending = 1;
+		GS_SELECT_FD_SET_W(p->gs);
 	} else if (memcmp(cmd, "clear", 5) == 0) {
 		GS_condis_clear(&gs_condis);
 		GS_condis_draw(&gs_condis, 1);
@@ -1611,4 +1615,3 @@ console_command(struct _peer *p, const char *cmd)
 
 	return 0;
 }
-
