@@ -228,6 +228,11 @@ jobs:
             cc: armv7l-linux-musleabihf
             ssl: linux-generic32
     runs-on: ubuntu-latest
+    env:
+      # Force runner to use Node 20 inside old musl Alpine containers.
+      # Node 24 requires pthread_getname_np which is missing in old musl libc.
+      ACTIONS_RUNNER_FORCE_ACTIONS_NODE_VERSION: node20
+      ACTIONS_RUNNER_FORCED_INTERNAL_NODE_VERSION: node20
     container:
       image: muslcc/x86_64:${{ matrix.cc }}
       options: --user root
