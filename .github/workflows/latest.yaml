@@ -22,7 +22,7 @@ jobs:
   Source:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: dist
         run: |
@@ -42,7 +42,7 @@ jobs:
   MacOS:
     runs-on: macos-13
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Compile
         run: |
@@ -86,7 +86,7 @@ jobs:
       OS: "freebsd"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Starting the VM
         uses: vmactions/freebsd-vm@v1
         with:
@@ -104,7 +104,7 @@ jobs:
             ./configure --enable-static --prefix=/opt
             make all
             strip tools/gs-netcat
-            (cd tools; tar cfz ../gsocket_${{ env.OS }}-x86_x64.tar.gz gs-netcat gsocket blitz gs-mount gs-sftp gs_funcs gsocket_dso.so.0 gsocket_uchroot_dso.so.0)
+            (cd tools; tar cfz ../gsocket_${{ env.OS }}-x86_64.tar.gz gs-netcat gsocket blitz gs-mount gs-sftp gs_funcs gsocket_dso.so.0 gsocket_uchroot_dso.so.0)
             mv tools/gs-netcat gs-netcat_${{ env.OS }}-x86_64
             
             # Build mini version
@@ -138,7 +138,7 @@ jobs:
       OS: "openbsd"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Starting the VM
         uses: vmactions/openbsd-vm@v1
         with:
@@ -165,7 +165,7 @@ jobs:
             ./configure --enable-static --prefix=/opt
             make all
             strip tools/gs-netcat
-            (cd tools; tar cfz ../gsocket_${{ env.OS }}-x86_x64.tar.gz gs-netcat gsocket blitz gs-mount gs-sftp gs_funcs gsocket_dso.so.0 gsocket_uchroot_dso.so.0)
+            (cd tools; tar cfz ../gsocket_${{ env.OS }}-x86_64.tar.gz gs-netcat gsocket blitz gs-mount gs-sftp gs_funcs gsocket_dso.so.0 gsocket_uchroot_dso.so.0)
             mv tools/gs-netcat gs-netcat_${{ env.OS }}-x86_64
             
             # Build mini version
@@ -232,7 +232,7 @@ jobs:
       image: muslcc/x86_64:${{ matrix.cc }}
       options: --user root
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Add build dependencies
         run: |
@@ -240,26 +240,26 @@ jobs:
 
       - name: Cache SSL
         id: cachessl
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: /opt
-          key: ${{ matrix.arch }}-ssl
+          key: ${{ matrix.arch }}-ssl-${{ env.OPENSSL_VER }}
 
       - name: Generate OpenSSL
         if: steps.cachessl.outputs.cache-hit != 'true'
         run: |
-          curl -SsfL https://www.openssl.org/source/openssl-${OPENSSL_VER:-1.1.1k}.tar.gz | tar -xzf - -C /tmp/
-          ( cd /tmp/openssl-${OPENSSL_VER:-1.1.1k} && \
+          curl -SsfL https://www.openssl.org/source/openssl-${OPENSSL_VER}.tar.gz | tar -xzf - -C /tmp/
+          ( cd /tmp/openssl-${OPENSSL_VER} && \
           ./Configure --prefix=/opt no-tests no-dso no-threads no-shared ${{ matrix.ssl }} && \
           make install_sw )
-          rm -rf rm -rf /tmp/openssl-${OPENSSL_VER:-1.1.1k} /opt/bin/openssl /opt/bin/c_rehash
+          rm -rf /tmp/openssl-${OPENSSL_VER} /opt/bin/openssl /opt/bin/c_rehash
 
       - name: SaveCache
         if: steps.cachessl.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v3
+        uses: actions/cache/save@v4
         with:
           path: /opt
-          key: ${{ matrix.arch }}-ssl
+          key: ${{ matrix.arch }}-ssl-${{ env.OPENSSL_VER }}
 
       - name: Compile-${{ matrix.arch }}
         run: |
